@@ -1,8 +1,13 @@
-from docopt import docopt
-from colony.client import ColonyClient
-from pprint import pprint
+import os
 
-import colony.utils
+from docopt import docopt, DocoptExit
+from colony.client import ColonyClient
+
+from colony.utils import BlueprintRepo, BadBlueprintRepo
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class BaseCommand(object):
     """Base class for parsed docopt command"""
@@ -10,7 +15,6 @@ class BaseCommand(object):
     def __init__(self, client: ColonyClient, command_args):
         self.client = client
         self.args = docopt(self.__doc__, argv=command_args)
-
 
     def execute(self):
         pass
@@ -42,19 +46,49 @@ class BlueprintsCommand(BaseCommand):
             commit = self.args.get('<commitId>')
 
             if commit and branch is None:
-                print("Since commit is specified, branch is required")
-                return
+                raise DocoptExit("Since commit is specified, branch is required")
 
             if not branch:
-                # Try to identify working branch
-                work_branch = colony.utils.get_blueprint_branch()
-                if work_branch:
-                    print(f"colony[WARN]: Since you haven't specified a branch, "
-                          f"current work branch '{work_branch}' is used")
-                    branch = work_branch
-                else:
-                    print("colony[WARN]: No branch has been specified and it couldn't be identified. "
-                          "Using branch attached to Colony")
+                logger.debug("Branch hasn't been specified. "
+                               "Trying to identify branch from current working directory")
+
+                try:
+                    repo = BlueprintRepo(os.getcwd())
+                    local_branch = repo.active_branch
+                    logger.debug(f"Current working branch is '{local_branch}' ")
+
+                    if repo.is_dirty():
+                        logger.warning("You have uncommitted changes")
+
+                    if repo.is_repo_detached():
+                        raise Exception("Repo's HEAD is in detached state")
+
+                    if not repo.is_current_branch_synced():
+                        logger.warning("Your local branch is not synced with remote")
+
+                    if repo.current_branch_exists_on_remote():
+                        branch = local_branch
+
+                except BadBlueprintRepo as e:
+                    logger.warning(f"Bad colony repo. Details: {e}")
+                except Exception as e:
+                    logger.warning(f"Cannot identify branch. Details: {e}")
+
+                finally:
+                    if not branch:
+                        logger.warning("No branch has been specified and it couldn't be identified. "
+                                       "Using default branch attached to Colony")
+
+
+                # work_branch = colony.utils.get_blueprint_branch()
+                # if work_branch:
+                #
+                #     logger.warning(f"Since you haven't specified a branch, "
+                #           f"current work branch '{work_branch}' is used")
+                #     branch = work_branch
+                # else:
+                #     logger.warning("No branch has been specified and it couldn't be identified. "
+                #           "Using branch attached to Colony")
 
             try:
                 bp = self.client.blueprints.validate(blueprint=name, branch=branch, commit=commit)
@@ -68,7 +102,6 @@ class BlueprintsCommand(BaseCommand):
 
                 for er in errors:
                     print(template.format(er['code'], er['message'], er['name']))
-                # pprint(errors)
 
             else:
                 print("Valid!")
